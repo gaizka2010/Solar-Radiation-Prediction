@@ -1,0 +1,261 @@
+---
+title: "code"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(mgcv)
+library(performance)
+library(see)
+library(effectsize)
+library(patchwork)
+
+```
+
+# Import data
+```{r cars}
+solar <- read.csv("SolarPrediction.csv")
+```
+
+# Explore NA and Data structure
+```{r pressure}
+str(solar)
+summary(solar)
+```
+Analysis with date data may need some data transformation, to begin with I'll
+analyze only numeric data, which shows no NA's or formatting issues.
+
+
+# Exploratory analysis 
+
+## Distributions
+```{r}
+ggplot(solar, aes(x=Radiation))+geom_histogram(scale = 2)+ggtitle("Distribution of Dependent Variable")
+```
+The dependent variable is quite skewed to the left.
+
+
+## Collinearity 
+```{r}
+#Subset df with numeric values
+solar_num <- solar %>%
+  select(Radiation, UNIXTime, Temperature, Pressure, Humidity, WindDirection.Degrees., Speed)
+
+#Create correlation plot
+b <-cor(solar_num)
+p <-cor.mtest(solar_num, conf.level = 0.95)
+corrplot(b, p.mat = p$p, sig.level = 0.05, method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black')
+```
+Expalanatory variables show some correlation between them but it's not extreme,
+<.40 in all cases. Collinearity shouldn't be a problem in model building, thus,
+principal component analysis shouldn't be needed. 
+
+# Model building
+First, I'll try to find which predictor variables are the best for predicting 
+solar Radiation. The first model will be a multiple regression developed with
+a stepwise method. Then, possible non-linear relationship between features and 
+predictors will be addressed to form a model with cuadratic or cubic 
+relationships.Lastly, for the variables that may show non-linear relationship 
+and don't adjust to cuadratic or cubic equations, splines will be tested.
+
+## Stepwise Model
+```{r}
+set.seed(2)
+modelstep <- train(
+  Radiation ~ UNIXTime + Temperature + Pressure + Humidity + WindDirection.Degrees. + Speed,
+  solar,
+  trControl = trainControl( method = "cv",
+                           number = 10),
+  method = "leapBackward"
+)
+
+modelstep$bestTune
+summary(modelstep$finalModel)
+```
+
+## Further explore
+The stepwise model recommends a model with 4 predictors. Nonetheless, I'll 
+compare the 4 predictor model versus a complete model.
+```{r}
+#Full model
+modelf1 <- lm(Radiation ~ UNIXTime + Temperature + Pressure + Humidity + WindDirection.Degrees. + Speed, solar)
+
+#Stepwise recommended model
+model2 <- lm(Radiation ~ UNIXTime + Temperature + Pressure  + WindDirection.Degrees., solar)
+
+#Performance comparison
+compare_performance(modelf1, model2)
+
+#Model assumptions
+check_model(modelf1)
+check_model(model2)
+```
+Although the stepwise approximation recommends a 4 feature model, the slight 
+performance advantage in all metrics of the complete model makes me consider
+using it as a better model.
+
+
+## Non-linear relationships visualizations
+Once I've tested that all features are at least significant predictors I'll 
+address some possible non-linear relationships. I'll start with some 
+visualizations.
+```{r}
+ggplot(solar, aes(x=UNIXTime, y=Radiation))+geom_smooth()
+ggplot(solar, aes(x=Temperature, y=Radiation))+geom_smooth()
+ggplot(solar, aes(x=Pressure, y=Radiation))+geom_smooth()
+ggplot(solar, aes(x=Humidity, y=Radiation))+geom_smooth()
+ggplot(solar, aes(x=WindDirection.Degrees., y=Radiation))+geom_smooth()
+ggplot(solar, aes(x=Speed, y=Radiation))+geom_smooth()
+```
+The visualizations show some complex relationships. The variable "Temperature"
+appears as similar to an inverted cubic function. On the other hand, wind 
+degrees shows a more clear cuadratic relationship with Solar Radiation.
+
+
+## Addressing linearity cuadratic and cubic variables
+Here, I'll analyze if Wind degrees shows truly a cuadratic relationship by 
+comparing it to a linear one. Then I'll perform the same analysis but with a
+cubic relationship with the "temperature" variable.
+```{r}
+#Wind direction as a cuadratic variable
+solar$WindDirection.Degrees.2 <- scale(solar$WindDirection.Degrees., scale = FALSE)^2
+
+model3 <- lm(Radiation ~ WindDirection.Degrees.2, solar)
+summary(model3)
+
+model4 <- lm(Radiation ~ WindDirection.Degrees., solar)
+summary(model4)
+
+#Temperature as a cubic variable
+solar$Temperature3 <- scale(solar$Temperature, scale = FALSE)^3
+
+model5 <- lm(Radiation ~ Temperature3, solar)
+summary(model5)
+
+model6 <- lm(Radiation ~ Temperature, solar)
+summary(model6)
+```
+Wind direction appears to better predict Solar Radiation as a cuadratic 
+relationship. In the case of Temperature, the linear model appears to be the 
+best.
+
+## Second model with cuadratic variable
+Complete the previous model adding a cuadratic relationship in the Wind degrees.
+```{r}
+modelf2 <- lm(Radiation ~ UNIXTime + Temperature + Pressure + Humidity + poly(WindDirection.Degrees., 2) + Speed, solar)
+summary(modelf2)
+```
+
+## Splines
+In the variables that show an unkown non-linear relationship splines will be 
+tested to achieve a better fit.
+```{r}
+#Unix
+models <- gam(Radiation ~ UNIXTime, data=solar)
+summary(models)
+models1 <- gam(Radiation ~ s(UNIXTime), data=solar)
+summary(models1)
+#Pressure
+models2 <- gam(Radiation ~ Pressure, data=solar)
+summary(models2)
+models3 <- gam(Radiation ~ s(Pressure), data=solar)
+summary(models3)
+#Humidity
+models4 <- gam(Radiation ~ Humidity, data=solar)
+summary(models4)
+models5 <- gam(Radiation ~ s(Humidity), data=solar)
+summary(models5)
+#Temperature
+models6 <- gam(Radiation ~ Temperature, data=solar)
+summary(models6)
+models7 <- gam(Radiation ~ s(Temperature), data=solar)
+summary(models7)
+```
+
+## Third model with cuadratic + Splines
+Complete the cuadratic model adding splines to the rest of the variables
+```{r}
+modelf3 <- gam(Radiation ~ s(UNIXTime) + s(Temperature) + s(Pressure) + s(Humidity) + poly(WindDirection.Degrees., 2) + Speed, data=solar)
+summary(modelf3)
+```
+
+# Testing final models
+
+## Model diagnostics
+```{r}
+check_model(modelf1)
+
+check_model(modelf2)
+```
+
+## Compare the performance
+```{r}
+
+compare_performance(modelf1, modelf2, modelf3, rank = TRUE)
+
+plot(compare_performance(modelf1, modelf2, modelf3, rank = TRUE))
+
+```
+
+In almost every diagnostic the splines + cuadratic model appears to be the best.
+Nonetheless, even though the use of splines may help achieving a greater 
+accuracy in training data it may also overfit. To test how well these models will
+perform in unseen data I'll train them in 80% of the data points and then test
+their accuracy in 20% of the dataset that is unseen.
+
+## Create train/test split
+```{r}
+set.seed(1)
+trainIndex <- createDataPartition(solar$Radiation, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+train <- solar[trainIndex,]
+test <- solar[-trainIndex,]
+```
+
+## Three models in train set and their performance
+```{r}
+modelf1t <- lm(Radiation ~ UNIXTime + Temperature + Pressure + Humidity + WindDirection.Degrees. + Speed, train)
+summary(modelf1t)
+
+modelf2t <- lm(Radiation ~ UNIXTime + Temperature + Pressure + Humidity + poly(WindDirection.Degrees., 2) + Speed, train)
+summary(modelf2t)
+
+modelf3t <- gam(Radiation ~ s(UNIXTime) + s(Temperature) + s(Pressure) + s(Humidity) + poly(WindDirection.Degrees., 2) + Speed, data=train)
+summary(modelf3t)
+```
+
+## Test model prediction on test data
+```{r}
+p <- predict(modelf1t, test)
+p2 <- predict(modelf2t, test)
+p3 <- predict(modelf3t, test)
+
+#Correlations between predictions and real data
+cor.test(p, test$Radiation)
+
+cor.test(p2, test$Radiation)
+
+cor.test(p3, test$Radiation)
+
+```
+
+The splines + cuadratic relationship model appears to be the best in this case.
+Both diagnostics and train/test performance shows that it achieves the best 
+accuracy without overfitting.
+
+
+# Further development
+
+## Generate dummy variables
+With the sunrise/set hours, create a dummy variable "time", "day" from sunrise to sunset
+and "night" being from sunset to sunrise. 
